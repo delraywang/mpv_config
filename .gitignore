@@ -1,0 +1,16 @@
+_cache/*
+fonts/*
+shaders/*
+vs/*
+
+# 日志与临时文件
+*.log
+*.tmp
+*.temp
+*.bak
+*~
+
+# 操作系统生成的元数据
+.DS_Store
+Thumbs.db
+desktop.ini
