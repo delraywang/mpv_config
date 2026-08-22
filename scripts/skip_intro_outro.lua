@@ -14,7 +14,7 @@ local SETTING_INTRO_END_TIME = "skip_intro_outro_intro_end_time"
 local SETTING_OUTRO_SKIP_DURATION = "skip_intro_outro_outro_skip_duration"
 local SETTING_OUTRO_SKIP_DELAY = "skip_intro_outro_outro_skip_delay"
 local RIGHT_CONSUME_PROP = "user-data/" .. SCRIPT_NAME .. "/consume-right"
-local DEFAULT_INTRO_SKIP_DELAY = 3
+local DEFAULT_INTRO_SKIP_DELAY = 5
 local DEFAULT_OUTRO_SKIP_DELAY = 10
 
 local settings_path = nil
