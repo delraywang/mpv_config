@@ -1098,10 +1098,10 @@ mp.register_script_message("set", function(prop, value)
         return
     end
 
+    set_danmaku_visibility(value == "on")
     if value == "on" then
         ENABLED = true
         if COMMENTS == nil then
-            set_danmaku_visibility(true)
             local path = mp.get_property("path")
             init(path)
         else

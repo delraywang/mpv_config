@@ -22,7 +22,9 @@ require("apis/dandanplay")
 require('apis/extra')
 
 DANMAKU_PATH = os.getenv("TEMP") or "/tmp/"
-HISTORY_PATH = mp.command_native({"expand-path", options.history_path})
+DEFAULT_HISTORY_PATH = mp.command_native({"expand-path", options.history_path})
+HISTORY_PATH = DEFAULT_HISTORY_PATH
+SETTINGS_PATH = nil
 PID = utils.getpid()
 DANMAKU = {sources = {}, count = 1}
 ENABLED, COMMENTS, DELAY = false, nil, 0
@@ -58,9 +60,140 @@ PLATFORM = (function()
     return "linux"
 end)()
 
+local function is_directory(path)
+    local info = utils.file_info(path)
+    return info and not info.is_file
+end
+
+local function ensure_directory(path)
+    if is_directory(path) then
+        return true
+    end
+
+    if PLATFORM == "windows" then
+        mp.command_native({
+            name = "subprocess",
+            playback_only = false,
+            capture_stdout = true,
+            capture_stderr = true,
+            args = { "cmd", "/C", "mkdir", (path:gsub("/", "\\")) },
+        })
+    else
+        mp.command_native({
+            name = "subprocess",
+            playback_only = false,
+            capture_stdout = true,
+            capture_stderr = true,
+            args = { "mkdir", "-p", path },
+        })
+    end
+
+    return is_directory(path)
+end
+
+local function set_folder_history_path(path)
+    if not path or is_protocol(path) then
+        -- 网络播放没有本地目录，继续使用原有的默认路径。
+        HISTORY_PATH = DEFAULT_HISTORY_PATH
+        SETTINGS_PATH = nil
+        return
+    end
+
+    local directory = get_parent_directory(path)
+    if not directory then
+        HISTORY_PATH = DEFAULT_HISTORY_PATH
+        SETTINGS_PATH = nil
+        return
+    end
+
+    local settings_directory = utils.join_path(directory:gsub("[/\\]+$", ""), ".mpv")
+    if not ensure_directory(settings_directory) then
+        HISTORY_PATH = DEFAULT_HISTORY_PATH
+        SETTINGS_PATH = nil
+        msg.warn("无法创建播放目录设置: " .. settings_directory)
+        return
+    end
+
+    SETTINGS_PATH = utils.join_path(settings_directory, "settings.conf")
+    HISTORY_PATH = utils.join_path(settings_directory, "danmaku-history.json")
+end
+
+local function parse_boolean(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+    value = value:lower()
+    if value == "yes" or value == "on" or value == "true" or value == "1" then
+        return true
+    elseif value == "no" or value == "off" or value == "false" or value == "0" then
+        return false
+    end
+    return nil
+end
+
+local function read_setting_boolean(key)
+    if not SETTINGS_PATH then
+        return nil
+    end
+
+    local content = read_file(SETTINGS_PATH)
+    if not content then
+        return nil
+    end
+
+    for line in content:gmatch("[^\r\n]+") do
+        local setting_key, value = line:match("^%s*([%w_-]+)%s*=%s*(.-)%s*$")
+        if setting_key == key then
+            return parse_boolean(value)
+        end
+    end
+    return nil
+end
+
+local function write_setting_boolean(key, flag)
+    if not SETTINGS_PATH then
+        return false
+    end
+
+    local content = read_file(SETTINGS_PATH) or ""
+    local lines = {}
+    local updated = false
+    for line in content:gmatch("[^\r\n]+") do
+        local setting_key = line:match("^%s*([%w_-]+)%s*=")
+        if setting_key == key then
+            lines[#lines + 1] = key .. "=" .. (flag and "yes" or "no")
+            updated = true
+        else
+            lines[#lines + 1] = line
+        end
+    end
+    if not updated then
+        lines[#lines + 1] = "# 是否显示此文件夹视频的弹幕。"
+        lines[#lines + 1] = key .. "=" .. (flag and "yes" or "no")
+    end
+
+    local file = io.open(SETTINGS_PATH, "w")
+    if not file then
+        msg.warn("无法写入弹幕开关设置: " .. SETTINGS_PATH)
+        return false
+    end
+    file:write(table.concat(lines, "\n") .. "\n")
+    file:close()
+    return true
+end
+
 local rebuild_convert_timer = nil
 
 function get_danmaku_visibility()
+    local setting_value = read_setting_boolean("danmaku_enabled")
+    if setting_value ~= nil then
+        return setting_value
+    end
+    if SETTINGS_PATH then
+        write_setting_boolean("danmaku_enabled", false)
+        return false
+    end
+
     local history_json = read_file(HISTORY_PATH)
     local history
     if history_json ~= nil then
@@ -81,6 +214,11 @@ function get_danmaku_visibility()
 end
 
 function set_danmaku_visibility(flag)
+    if SETTINGS_PATH then
+        write_setting_boolean("danmaku_enabled", flag)
+        return
+    end
+
     local history = {}
     local history_json = read_file(HISTORY_PATH)
     if history_json ~= nil then
@@ -840,6 +978,10 @@ function init(path)
     end
 end
 
+mp.register_event("start-file", function()
+    set_folder_history_path(mp.get_property("path"))
+end)
+
 mp.register_event("file-loaded", function()
     local path = mp.get_property("path")
     local dir = get_parent_directory(path)
@@ -850,6 +992,8 @@ mp.register_event("file-loaded", function()
     if not video or video["image"] or video["albumart"] or fps < 23 or duration < 60 then
         return
     end
+
+    set_folder_history_path(path)
 
     read_danmaku_source_record(path)
 
@@ -913,11 +1057,11 @@ end)
 
 mp.register_script_message("show_danmaku_keyboard", function()
     ENABLED = not ENABLED
+    set_danmaku_visibility(ENABLED)
     if ENABLED then
         mp.commandv("script-message-to", "uosc", "set", "show_danmaku", "on")
         if COMMENTS == nil then
             show_message("加载弹幕初始化...", 3)
-            set_danmaku_visibility(true)
             local path = mp.get_property("path")
             init(path)
         else

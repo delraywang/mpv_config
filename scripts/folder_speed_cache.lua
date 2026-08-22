@@ -1,5 +1,5 @@
--- 按“当前视频所在文件夹名称”缓存并恢复播放速度。
--- 注意：key 只使用文件夹名称，不使用完整路径；同名文件夹会共享同一份速度。
+-- 按当前视频所在文件夹保存并恢复播放速度。
+-- 配置保存在当前播放目录的 .mpv/settings.conf 的 speed 字段。
 
 local mp = require("mp")
 local options = require("mp.options")
@@ -7,7 +7,6 @@ local utils = require("mp.utils")
 
 local opt = {
     enabled = true,
-    cache_path = "~~/_cache/folder-speed-cache.json",
     save_delay = 0.8,
     min_speed = 0.1,
     max_speed = 10,
@@ -20,11 +19,12 @@ if not opt.enabled then
     return
 end
 
-local cache_path = mp.command_native({ "expand-path", opt.cache_path })
-
-local cache = { version = 1, folders = {} }
-local current_key = nil
+local SETTING_SPEED = "speed"
+local SETTINGS_FILE_NAME = "settings.conf"
+local SPEED_COMMENT = "# 当前文件夹视频的播放速度；1.0 为正常速度。"
+local current_folder_name = nil
 local current_folder_path = nil
+local settings_path = nil
 local suppress_save_until = 0
 
 local function is_protocol(path)
@@ -34,34 +34,34 @@ local function is_protocol(path)
     )
 end
 
-local function read_json_file(path)
+local function read_file(path)
+    if not path then
+        return nil
+    end
+
     local file = io.open(path, "r")
     if not file then
-        return {}
+        return nil
     end
 
     local content = file:read("*all")
     file:close()
-
-    if not content or content == "" then
-        return {}
-    end
-
-    return utils.parse_json(content) or {}
+    return content
 end
 
-local function write_json_file(path, data)
-    local file = io.open(path, "w+")
-    if not file then
-        mp.msg.warn("无法写入速度缓存文件: " .. path)
-        return
+local function write_file(path, content)
+    if not path then
+        return false
     end
 
-    local content = utils.format_json(data)
-    if content then
-        file:write(content)
+    local file = io.open(path, "w")
+    if not file then
+        mp.msg.warn("无法写入播放速度设置: " .. path)
+        return false
     end
+    file:write(content)
     file:close()
+    return true
 end
 
 local function normalize_path(path)
@@ -98,30 +98,123 @@ local function valid_speed(speed)
     return type(speed) == "number" and speed >= opt.min_speed and speed <= opt.max_speed
 end
 
-local function normalize_cache(raw)
-    if type(raw) == "table" and raw.version == 1 and type(raw.folders) == "table" then
-        return raw
+local function is_directory(path)
+    local info = utils.file_info(path)
+    return info and not info.is_file
+end
+
+local function ensure_directory(path)
+    if is_directory(path) then
+        return true
     end
 
-    return { version = 1, folders = {} }
-end
+    local platform = mp.get_property("platform", "")
+    if platform == "windows" then
+        mp.command_native({
+            name = "subprocess",
+            playback_only = false,
+            capture_stdout = true,
+            capture_stderr = true,
+            args = { "cmd", "/C", "mkdir", (path:gsub("/", "\\")) },
+        })
+    else
+        mp.command_native({
+            name = "subprocess",
+            playback_only = false,
+            capture_stdout = true,
+            capture_stderr = true,
+            args = { "mkdir", "-p", path },
+        })
+    end
 
-local function load_cache()
-    cache = normalize_cache(read_json_file(cache_path))
-end
-
-local function save_cache()
-    cache.version = 1
-    cache.folders = type(cache.folders) == "table" and cache.folders or {}
-    write_json_file(cache_path, cache)
+    return is_directory(path)
 end
 
 local function select_current_folder()
-    current_key, current_folder_path = get_folder_key()
+    current_folder_name, current_folder_path = get_folder_key()
+    settings_path = nil
+
+    if not current_folder_path then
+        return
+    end
+
+    local config_directory = utils.join_path(current_folder_path, ".mpv")
+    if not ensure_directory(config_directory) then
+        mp.msg.warn("无法创建播放目录设置目录: " .. config_directory)
+        return
+    end
+
+    settings_path = utils.join_path(config_directory, SETTINGS_FILE_NAME)
+end
+
+local function serialize_speed(speed)
+    local text = string.format("%.3f", speed)
+    text = text:gsub("0+$", ""):gsub("%.$", "")
+    return text
+end
+
+local function read_speed_setting()
+    if not settings_path then
+        return nil
+    end
+
+    local content = read_file(settings_path)
+    if not content then
+        return nil
+    end
+
+    local speed = nil
+    for line in content:gmatch("[^\r\n]+") do
+        local key, value = line:match("^%s*([%w_-]+)%s*=%s*(.-)%s*$")
+        if key == SETTING_SPEED then
+            local parsed = tonumber(value)
+            if valid_speed(parsed) then
+                speed = parsed
+            end
+        end
+    end
+    return speed
+end
+
+local function update_speed_setting(speed)
+    if not settings_path then
+        return false
+    end
+
+    local content = read_file(settings_path) or ""
+    local lines = {}
+    local found = false
+    for line in content:gmatch("[^\r\n]+") do
+        local key = line:match("^%s*([%w_-]+)%s*=")
+        if key == SETTING_SPEED then
+            if not found then
+                found = true
+                if speed == nil and lines[#lines] == SPEED_COMMENT then
+                    lines[#lines] = nil
+                end
+                if speed ~= nil then
+                    lines[#lines + 1] = SETTING_SPEED .. "=" .. serialize_speed(speed)
+                end
+            end
+        else
+            lines[#lines + 1] = line
+        end
+    end
+
+    if speed ~= nil and not found then
+        lines[#lines + 1] = SPEED_COMMENT
+        lines[#lines + 1] = SETTING_SPEED .. "=" .. serialize_speed(speed)
+    end
+
+    if speed == nil and not found then
+        return true
+    end
+
+    return write_file(settings_path, table.concat(lines, "\n") .. "\n")
 end
 
 local function save_speed_state(reason)
-    if not current_key then
+    if not current_folder_name then
         return
     end
 
@@ -130,15 +223,9 @@ local function save_speed_state(reason)
         return
     end
 
-    cache.folders[current_key] = {
-        folder_name = current_key,
-        folder_path = current_folder_path,
-        speed = speed,
-        updated_at = os.time(),
-    }
-    save_cache()
+    update_speed_setting(speed)
 
-    mp.msg.verbose(string.format("已保存文件夹播放速度 [%s]: %s", reason or "manual", current_key))
+    mp.msg.verbose(string.format("已保存文件夹播放速度 [%s]: %s", reason or "manual", current_folder_name))
 end
 
 local save_timer = mp.add_timeout(opt.save_delay, function()
@@ -147,7 +234,7 @@ end)
 save_timer:kill()
 
 local function schedule_save()
-    if not current_key or mp.get_time() < suppress_save_until then
+    if not current_folder_name or mp.get_time() < suppress_save_until then
         return
     end
 
@@ -156,21 +243,19 @@ local function schedule_save()
 end
 
 local function restore_speed_state()
-    if not current_key then
+    if not current_folder_name then
         return
     end
 
-    local entry = cache.folders[current_key]
-    if type(entry) ~= "table" or not valid_speed(entry.speed) then
+    local speed = read_speed_setting()
+    if not speed then
         return
     end
 
     suppress_save_until = mp.get_time() + opt.save_delay + 1
-    mp.set_property_number("speed", entry.speed)
-    mp.msg.info("已恢复文件夹播放速度: " .. current_key)
+    mp.set_property_number("speed", speed)
+    mp.msg.info("已恢复文件夹播放速度: " .. current_folder_name)
 end
-
-load_cache()
 
 mp.register_event("start-file", function()
     select_current_folder()
@@ -200,9 +285,9 @@ mp.register_script_message("folder-speed-cache-save", function()
 end)
 
 mp.register_script_message("folder-speed-cache-clean", function()
-    cache = { version = 1, folders = {} }
-    save_cache()
-    mp.osd_message("已清理文件夹播放速度缓存", 2)
+    if update_speed_setting(nil) then
+        mp.osd_message("已清理当前文件夹播放速度设置", 2)
+    end
 end)
 
-mp.msg.info("正在运行 文件夹播放速度缓存")
+mp.msg.info("正在运行 文件夹播放速度设置")
