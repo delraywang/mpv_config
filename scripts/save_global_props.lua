@@ -32,7 +32,7 @@ local min_major = 0
 local min_minor = 34
 local min_patch = 0
 local mpv_ver_curr = mp.get_property_native("mpv-version", "unknown")
-local function incompat_check(full_str, tar_major, tar_minor, tar_patch)
+local function is_version_incompatible(full_str, tar_major, tar_minor, tar_patch)
 	if full_str == "unknown" then
 		return true
 	end
@@ -56,35 +56,35 @@ local function incompat_check(full_str, tar_major, tar_minor, tar_patch)
 
 	return false
 end
-if incompat_check(mpv_ver_curr, min_major, min_minor, min_patch) then
+if is_version_incompatible(mpv_ver_curr, min_major, min_minor, min_patch) then
 	mp.msg.warn("当前mpv版本 (" .. (mpv_ver_curr or "未知") .. ") 低于 " .. min_major .. "." .. min_minor .. "." .. min_patch .. "，已终止脚本。")
 	return
 end
 
-local function split(inputstr, sep)
+local function split_csv(inputstr)
 	local result = {}
-	for str in string.gmatch(inputstr, "([^" .. sep .. "]+)") do
+	for str in string.gmatch(inputstr, "([^,]+)") do
 		table.insert(result, str)
 	end
 	return result
 end
 
-opt.props = split(opt.props, ",")
-local watch_later_opts = split(mp.get_property("watch-later-options"), ",")
+opt.props = split_csv(opt.props)
+local watch_later_opts = split_csv(mp.get_property("watch-later-options"))
 local dup_opts = false
 
-local function check_dup(table1, table2)
-	for _, value1 in ipairs(table1) do
-		for _, value2 in ipairs(table2) do
-			if value1 == value2 then
+local function check_watch_later_overlap(properties, watch_later_options)
+	for _, property in ipairs(properties) do
+		for _, option in ipairs(watch_later_options) do
+			if property == option then
 				dup_opts = true
-				mp.msg.warn("存在与 --watch-later-options 重合的项目： " .. value1)
+				mp.msg.warn("存在与 --watch-later-options 重合的项目： " .. property)
 			end
 		end
 	end
 end
 
-check_dup(opt.props, watch_later_opts)
+check_watch_later_overlap(opt.props, watch_later_opts)
 
 if dup_opts and opt.dup_block then
 	mp.msg.warn("已自动禁用 全局属性保存恢复")
@@ -140,7 +140,7 @@ local function ensure_directory(path)
 	return is_directory(path)
 end
 
-local function select_data_file()
+local function prepare_settings_path()
 	settings_path = nil
 	saved_data = {}
 	cleaned = false
@@ -233,7 +233,7 @@ local function is_property_comment(line, prop_name)
 		and line:match("视频是否静音。$") ~= nil
 end
 
-local function read_data_file()
+local function read_saved_data()
 	local result = {}
 	local content = read_file(settings_path)
 	if not content then
@@ -263,7 +263,7 @@ local function write_settings_file(lines)
 	return true
 end
 
-local function save_data_file()
+local function persist_saved_data()
 	if cleaned or not settings_path then
 		mp.msg.verbose("因清理属性记录而中止保存功能")
 		return
@@ -305,7 +305,7 @@ local function save_data_file()
 	write_settings_file(lines)
 end
 
-local function clean_data_file()
+local function clear_saved_properties()
 	if not settings_path then
 		mp.osd_message("没有可清理的本地播放目录设置", 2)
 		return
@@ -331,7 +331,7 @@ local function clean_data_file()
 	mp.osd_message("已清理记录的属性\n建议重启mpv", 2)
 end
 
-local function apply_saved_data()
+local function apply_saved_properties()
 	for _, prop_name in ipairs(opt.props) do
 		local saved_value = saved_data[prop_name]
 		if saved_value ~= nil then
@@ -340,24 +340,24 @@ local function apply_saved_data()
 	end
 end
 
-local function init()
+local function initialize_property_saving()
 	for _, prop_name in ipairs(opt.props) do
 		if opt.save_mode == 2 then
 			mp.observe_property(prop_name, "native", function(_, prop_value)
 				saved_data[prop_name] = mp.get_property_native(prop_name)
-				save_data_file()
+				persist_saved_data()
 			end)
 		end
 	end
 end
 
-init()
+initialize_property_saving()
 mp.msg.info("正在运行 文件夹属性保存恢复 模式" .. opt.save_mode)
 
 mp.register_event("file-loaded", function()
-	if select_data_file() then
-		saved_data = read_data_file()
-		apply_saved_data()
+	if prepare_settings_path() then
+		saved_data = read_saved_data()
+		apply_saved_properties()
 	end
 end)
 
@@ -365,7 +365,7 @@ if opt.save_mode == 1 then
 	mp.register_event("shutdown", function()
 		for _, prop_name in ipairs(opt.props) do
 			saved_data[prop_name] = mp.get_property_native(prop_name)
-			save_data_file()
+			persist_saved_data()
 		end
 	end)
 end
@@ -377,7 +377,7 @@ mp.register_event("end-file", function()
 	for _, prop_name in ipairs(opt.props) do
 		saved_data[prop_name] = mp.get_property_native(prop_name)
 	end
-	save_data_file()
+	persist_saved_data()
 end)
 
-mp.register_script_message("clean_data", clean_data_file)
+mp.register_script_message("clean_data", clear_saved_properties)

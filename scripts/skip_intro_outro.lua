@@ -73,7 +73,7 @@ local function show_skip_message(text, duration)
     end
 end
 
-local function set_right_consumed(value)
+local function set_right_key_consumed(value)
     mp.set_property_bool(RIGHT_CONSUME_PROP, value)
 end
 
@@ -84,28 +84,30 @@ local function stop_countdown()
     end
 end
 
+local function clear_pending_skip()
+    stop_countdown()
+    pending_skip = nil
+    set_right_key_consumed(false)
+end
+
 local function reset_playback_skip_state()
     if intro_timer then
         intro_timer:kill()
         intro_timer = nil
     end
-    stop_countdown()
-    pending_skip = nil
-    set_right_consumed(false)
+    clear_pending_skip()
     hide_skip_message()
     intro_skip_cancelled = false
     outro_already_skipped = false
     intro_initial_position = nil
 end
 
-local function finish_pending_skip(kind)
+local function execute_pending_skip(kind)
     if pending_skip ~= kind then
         return
     end
 
-    stop_countdown()
-    pending_skip = nil
-    set_right_consumed(false)
+    clear_pending_skip()
     hide_skip_message()
 
     if kind == "intro" then
@@ -126,9 +128,7 @@ local function cancel_pending_skip()
         return false
     end
 
-    stop_countdown()
-    pending_skip = nil
-    set_right_consumed(false)
+    clear_pending_skip()
     if kind == "intro" then
         intro_skip_cancelled = true
     else
@@ -144,13 +144,13 @@ end
 local function start_countdown(kind, seconds)
     stop_countdown()
     pending_skip = kind
-    set_right_consumed(true)
+    set_right_key_consumed(true)
 
     local elapsed = 0
     local last_time = mp.get_time()
     local last_displayed = nil
 
-    local function tick()
+    local function update_countdown()
         if pending_skip ~= kind then
             stop_countdown()
             return
@@ -174,12 +174,12 @@ local function start_countdown(kind, seconds)
         end
 
         if remaining <= 0 then
-            finish_pending_skip(kind)
+            execute_pending_skip(kind)
         end
     end
 
-    countdown_timer = mp.add_periodic_timer(0.1, tick)
-    tick()
+    countdown_timer = mp.add_periodic_timer(0.1, update_countdown)
+    update_countdown()
 end
 
 local function should_start_outro_countdown(position, duration)
@@ -430,7 +430,7 @@ local function read_settings()
     return loaded
 end
 
-local function current_video_folder()
+local function get_current_video_folder()
     local path = mp.get_property("path", "")
     if path == "" or is_protocol(path) then
         return nil, nil
@@ -459,7 +459,7 @@ local function register_settings_button()
     mp.commandv("script-message-to", "uosc", "set-button", "skip_intro_outro_settings", payload)
 end
 
-local function load_settings_for_current_file()
+local function load_settings_for_current_folder()
     settings_path = nil
     loaded_path = nil
     settings = {
@@ -470,7 +470,7 @@ local function load_settings_for_current_file()
         skip_intro_outro_outro_skip_delay = DEFAULT_OUTRO_SKIP_DELAY,
     }
 
-    local directory, path = current_video_folder()
+    local directory, path = get_current_video_folder()
     if not directory then
         return
     end
@@ -553,7 +553,7 @@ local function open_settings_menu(edit_key, error_message)
     mp.commandv("script-message-to", "uosc", "open-menu", utils.format_json(menu))
 end
 
-local function save_or_warn()
+local function save_settings_or_warn()
     if write_settings() then
         return true
     end
@@ -569,7 +569,7 @@ local function capture_intro()
     end
 
     settings.skip_intro_outro_intro_end_time = position
-    if save_or_warn() then
+    if save_settings_or_warn() then
         mp.osd_message("片头已设为 " .. format_seconds(position), 2)
     end
     open_settings_menu()
@@ -584,13 +584,13 @@ local function capture_outro()
     end
 
     settings.skip_intro_outro_outro_skip_duration = math.max(0, duration - position)
-    if save_or_warn() then
+    if save_settings_or_warn() then
         mp.osd_message("片尾已设为 " .. format_seconds(settings.skip_intro_outro_outro_skip_duration) .. "（距片尾）", 2)
     end
     open_settings_menu()
 end
 
-local function set_time_setting(key, text)
+local function set_skip_time_setting(key, text)
     local seconds = parse_seconds(text)
     if not seconds then
         open_settings_menu(key, "时间格式无效")
@@ -604,7 +604,7 @@ local function set_time_setting(key, text)
     end
 
     settings[key] = seconds
-    if save_or_warn() then
+    if save_settings_or_warn() then
         mp.osd_message((key == SETTING_INTRO_END_TIME and "片头" or "片尾") .. "已设为 " .. format_seconds(seconds), 2)
     end
     open_settings_menu()
@@ -686,7 +686,7 @@ mp.register_script_message("set", function(property, value)
         outro_already_skipped = false
         schedule_intro_skip()
     end
-    save_or_warn()
+    save_settings_or_warn()
     sync_toggle()
 end)
 
@@ -706,7 +706,7 @@ mp.register_script_message("skip-intro-outro-configure", function(first, second)
                 outro_already_skipped = false
                 schedule_intro_skip()
             end
-            save_or_warn()
+            save_settings_or_warn()
             sync_toggle()
             open_settings_menu()
         elseif event.index == 2 then
@@ -718,7 +718,7 @@ mp.register_script_message("skip-intro-outro-configure", function(first, second)
     end
 
     if first == SETTING_INTRO_END_TIME or first == SETTING_OUTRO_SKIP_DURATION then
-        set_time_setting(first, second)
+        set_skip_time_setting(first, second)
     end
 end)
 
@@ -733,7 +733,7 @@ mp.register_event("file-loaded", function()
         intro_initial_position = initial_position
     end
     register_settings_button()
-    load_settings_for_current_file()
+    load_settings_for_current_folder()
     sync_toggle()
     schedule_intro_skip()
 end)

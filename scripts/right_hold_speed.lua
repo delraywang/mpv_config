@@ -9,7 +9,7 @@ local hold_timer = nil
 local right_consumed = false
 local RIGHT_CONSUME_PROP = "user-data/skip_intro_outro/consume-right"
 
-local function stop_timer()
+local function stop_hold_timer()
     if hold_timer then
         hold_timer:kill()
         hold_timer = nil
@@ -30,7 +30,7 @@ local function handle_right(event)
         if key_down then return end
 
         key_down = true
-        stop_timer()
+        stop_hold_timer()
 
         -- skip_intro_outro owns this key while an intro/outro countdown is
         -- active. Consume both key events so neither seek nor hold-to-speed
@@ -53,7 +53,7 @@ local function handle_right(event)
         if not key_down then return end
 
         key_down = false
-        stop_timer()
+        stop_hold_timer()
 
         if right_consumed then
             right_consumed = false
