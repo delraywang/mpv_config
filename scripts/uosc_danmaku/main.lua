@@ -229,9 +229,10 @@ function set_danmaku_visibility(flag)
 end
 
 function set_danmaku_button()
-    if get_danmaku_visibility() then
-        mp.commandv("script-message-to", "uosc", "set", "show_danmaku", "on")
-    end
+    local enabled = get_danmaku_visibility()
+    ENABLED = enabled
+    mp.commandv("script-message-to", "uosc", "set", "show_danmaku", enabled and "on" or "off")
+    return enabled
 end
 
 function show_loaded(init)
@@ -997,7 +998,7 @@ mp.register_event("file-loaded", function()
 
     read_danmaku_source_record(path)
 
-    if not get_danmaku_visibility() then
+    if not set_danmaku_button() then
         return
     end
 
