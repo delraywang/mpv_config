@@ -4,6 +4,7 @@
 local mp = require("mp")
 local utils = require("mp.utils")
 
+-- settings.conf 中使用的字段名。
 local SETTING_SPEED = "video_speed"
 local SETTING_SPEED_ENABLED = "video_speed_enabled"
 local SETTING_SPEED_SAVE_DELAY = "video_speed_save_delay"
@@ -18,16 +19,22 @@ local SPEED_OPTION_FIELDS = {
     { key = SETTING_SPEED_MIN, comment = "# 允许保存和恢复的最低视频播放速度。" },
     { key = SETTING_SPEED_MAX, comment = "# 允许保存和恢复的最高视频播放速度。" },
 }
+-- 当前文件夹的倍速保存配置。
 local speed_options = {
     enabled = true,
     save_delay = 0.8,
     min_speed = 0.1,
     max_speed = 10,
 }
+-- 当前视频所在文件夹名称。
 local current_folder_name = nil
+-- 当前视频所在文件夹路径。
 local current_folder_path = nil
+-- 当前文件夹的 settings.conf 路径。
 local settings_path = nil
+-- 恢复倍速期间禁止保存的截止时间。
 local suppress_save_until = 0
+-- 延迟保存倍速的定时器。
 local save_timer = nil
 
 local function is_protocol(path)
@@ -87,6 +94,7 @@ local function reset_speed_options()
 end
 
 local function load_speed_options()
+    -- 从当前 settings.conf 读取倍速保存选项，并校验取值范围。
     reset_speed_options()
     local content = read_file(settings_path)
     if not content then
@@ -144,6 +152,7 @@ local function serialize_speed(speed)
 end
 
 local function update_speed_settings_file(speed_override, remove_speed)
+    -- 合并更新倍速字段；speed_override=nil 且 remove_speed=true 时清除已保存倍速。
     if not settings_path then
         return false
     end
@@ -299,6 +308,7 @@ local function ensure_directory(path)
 end
 
 local function initialize_current_folder()
+    -- 定位当前视频文件夹，创建配置目录并加载该文件夹的倍速选项。
     current_folder_name, current_folder_path = get_current_folder()
     settings_path = nil
 
@@ -351,6 +361,7 @@ local function save_speed_setting(speed)
 end
 
 local function save_speed_state(reason)
+    -- 保存当前 mpv speed 属性，并记录触发保存的原因。
     if not current_folder_name or not speed_options.enabled then
         return
     end
@@ -380,6 +391,7 @@ local function schedule_speed_save()
 end
 
 local function restore_speed_state()
+    -- 恢复当前文件夹之前保存的播放速度，并暂时抑制恢复动作触发的再次保存。
     if not current_folder_name or not speed_options.enabled then
         return
     end

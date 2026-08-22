@@ -1,14 +1,21 @@
+-- RIGHT 短按快进，长按临时加速；片头片尾倒计时期间由跳过脚本消费该按键。
 local mp = require("mp")
 
 local HOLD_DELAY = 0.4
 
+-- RIGHT 是否处于按下状态。
 local key_down = false
+-- RIGHT 是否已经触发长按倍速。
 local holding = false
+-- 长按前保存的播放速度。
 local previous_speed = 1
+-- 等待长按触发的定时器。
 local hold_timer = nil
+-- 当前 RIGHT 按键是否由片头片尾脚本消费。
 local right_consumed = false
 local RIGHT_CONSUME_PROP = "user-data/skip_intro_outro/consume-right"
 
+-- 停止等待长按触发的定时器。
 local function stop_hold_timer()
     if hold_timer then
         hold_timer:kill()
@@ -16,6 +23,7 @@ local function stop_hold_timer()
     end
 end
 
+-- 长按达到阈值后切换到临时倍速。
 local function begin_hold()
     hold_timer = nil
     if not key_down then return end
@@ -25,6 +33,7 @@ local function begin_hold()
     mp.set_property_number("speed", target_speed)
 end
 
+-- 处理 RIGHT 的按下和释放事件。
 local function handle_right(event)
     if event.event == "down" then
         if key_down then return end
@@ -32,13 +41,10 @@ local function handle_right(event)
         key_down = true
         stop_hold_timer()
 
-        -- skip_intro_outro owns this key while an intro/outro countdown is
-        -- active. Consume both key events so neither seek nor hold-to-speed
-        -- runs for the cancellation press.
+        -- 片头片尾倒计时期间由跳过脚本接管 RIGHT；本次取消按键同时消费按下和释放事件，
+        -- 避免触发快进或长按倍速。
         if mp.get_property_bool(RIGHT_CONSUME_PROP, false) then
-            -- Clear the shared latch before notifying the skip script. The
-            -- current press is consumed below, while the original RIGHT
-            -- binding is immediately available for the next press.
+            -- 先清除共享标记，再通知跳过脚本；本次按键仍会被消费，下一次 RIGHT 恢复原有功能。
             mp.set_property_bool(RIGHT_CONSUME_PROP, false)
             right_consumed = true
             mp.commandv("script-message-to", "skip_intro_outro", "right-pressed")
