@@ -222,6 +222,17 @@ local function property_comment(prop_name)
 	return property_comments[prop_name] or "# 当前文件夹视频的 mpv 属性：" .. prop_name .. "。"
 end
 
+local function is_property_comment(line, prop_name)
+	if line == property_comment(prop_name) then
+		return true
+	end
+
+	-- 修复旧版本写入的损坏静音注释；后续统一写入完整 UTF-8 注释。
+	return prop_name == "mute"
+		and type(line) == "string"
+		and line:match("视频是否静音。$") ~= nil
+end
+
 local function read_data_file()
 	local result = {}
 	local content = read_file(settings_path)
@@ -265,6 +276,9 @@ local function save_data_file()
 		local key = line:match("^%s*([^%s=]+)%s*=")
 		if key and property_set[key] and saved_data[key] ~= nil then
 			if not updated[key] then
+				if is_property_comment(lines[#lines], key) then
+					lines[#lines] = property_comment(key)
+				end
 				local serialized = serialize_setting_value(saved_data[key])
 				if serialized ~= nil then
 					lines[#lines + 1] = key .. "=" .. serialized
@@ -303,7 +317,7 @@ local function clean_data_file()
 		for line in content:gmatch("[^\r\n]+") do
 			local key = line:match("^%s*([^%s=]+)%s*=")
 			if key and property_set[key] then
-				if lines[#lines] == property_comment(key) then
+				if is_property_comment(lines[#lines], key) then
 					lines[#lines] = nil
 				end
 			else

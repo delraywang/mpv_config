@@ -1,10 +1,10 @@
 -- 保存并恢复当前视频的播放速度（视频速度）。
--- 配置保存在当前播放目录的 .mpv/settings.conf 的 speed 字段。
+-- 配置保存在当前播放目录的 .mpv/settings.conf 的 video_speed 字段。
 
 local mp = require("mp")
 local utils = require("mp.utils")
 
-local SETTING_SPEED = "speed"
+local SETTING_SPEED = "video_speed"
 local SETTING_SPEED_ENABLED = "video_speed_enabled"
 local SETTING_SPEED_SAVE_DELAY = "video_speed_save_delay"
 local SETTING_SPEED_MIN = "video_speed_min_speed"
@@ -137,7 +137,13 @@ local function serialize_speed_option(key)
     return nil
 end
 
-local function ensure_speed_option_fields()
+local function serialize_speed(speed)
+    local text = string.format("%.3f", speed)
+    text = text:gsub("0+$", ""):gsub("%.$", "")
+    return text
+end
+
+local function ensure_speed_option_fields(speed_override, remove_speed)
     if not settings_path then
         return false
     end
@@ -145,7 +151,36 @@ local function ensure_speed_option_fields()
     local content = read_file(settings_path) or ""
     local lines = {}
     local seen = {}
-    local changed = false
+    local saved_speed = nil
+
+    local current_speed = mp.get_property_number("speed", 1)
+    if type(current_speed) ~= "number"
+        or current_speed < speed_options.min_speed
+        or current_speed > speed_options.max_speed then
+        current_speed = 1
+    end
+
+    for line in content:gmatch("[^\r\n]+") do
+        local key, value = line:match("^%s*([%w_-]+)%s*=%s*(.-)%s*$")
+        if key == SETTING_SPEED then
+            local parsed = tonumber(value)
+            if parsed and parsed >= speed_options.min_speed and parsed <= speed_options.max_speed then
+                saved_speed = parsed
+            end
+        end
+    end
+
+    local speed_to_write = nil
+    if not remove_speed then
+        speed_to_write = speed_override or saved_speed or current_speed
+        if type(speed_to_write) ~= "number"
+            or speed_to_write < speed_options.min_speed
+            or speed_to_write > speed_options.max_speed then
+            speed_to_write = current_speed
+        end
+    end
+    local speed_written = false
+
     for line in content:gmatch("[^\r\n]+") do
         local key = line:match("^%s*([%w_-]+)%s*=")
         local is_speed_option = key == SETTING_SPEED_ENABLED
@@ -156,9 +191,18 @@ local function ensure_speed_option_fields()
             if not seen[key] then
                 lines[#lines + 1] = line
                 seen[key] = true
+                if key == SETTING_SPEED_ENABLED and not remove_speed then
+                    lines[#lines + 1] = SPEED_COMMENT
+                    lines[#lines + 1] = SETTING_SPEED .. "=" .. serialize_speed(speed_to_write)
+                    speed_written = true
+                end
             else
-                changed = true
+                -- 丢弃重复的速度选项，后续保留第一次出现的字段。
             end
+        elseif key == SETTING_SPEED then
+            -- 速度字段统一在 video_speed_enabled 后写入。
+        elseif line == SPEED_COMMENT then
+            -- 速度字段会在 video_speed_enabled 后统一写入。
         else
             lines[#lines + 1] = line
         end
@@ -168,14 +212,24 @@ local function ensure_speed_option_fields()
         if not seen[field.key] then
             lines[#lines + 1] = field.comment
             lines[#lines + 1] = field.key .. "=" .. serialize_speed_option(field.key)
-            changed = true
+            if field.key == SETTING_SPEED_ENABLED and not remove_speed then
+                lines[#lines + 1] = SPEED_COMMENT
+                lines[#lines + 1] = SETTING_SPEED .. "=" .. serialize_speed(speed_to_write)
+                speed_written = true
+            end
         end
     end
 
-    if not changed then
+    if not speed_written and not remove_speed then
+        lines[#lines + 1] = SPEED_COMMENT
+        lines[#lines + 1] = SETTING_SPEED .. "=" .. serialize_speed(speed_to_write)
+    end
+
+    local updated_content = table.concat(lines, "\n") .. "\n"
+    if updated_content == content then
         return true
     end
-    return write_file(settings_path, table.concat(lines, "\n") .. "\n")
+    return write_file(settings_path, updated_content)
 end
 
 local function normalize_path(path)
@@ -260,13 +314,7 @@ local function select_current_folder()
 
     settings_path = utils.join_path(config_directory, SETTINGS_FILE_NAME)
     load_speed_options()
-    ensure_speed_option_fields()
-end
-
-local function serialize_speed(speed)
-    local text = string.format("%.3f", speed)
-    text = text:gsub("0+$", ""):gsub("%.$", "")
-    return text
+    ensure_speed_option_fields(nil, false)
 end
 
 local function read_speed_setting()
@@ -297,36 +345,9 @@ local function update_speed_setting(speed)
         return false
     end
 
-    local content = read_file(settings_path) or ""
-    local lines = {}
-    local found = false
-    for line in content:gmatch("[^\r\n]+") do
-        local key = line:match("^%s*([%w_-]+)%s*=")
-        if key == SETTING_SPEED then
-            if not found then
-                found = true
-                if speed == nil and lines[#lines] == SPEED_COMMENT then
-                    lines[#lines] = nil
-                end
-                if speed ~= nil then
-                    lines[#lines + 1] = SETTING_SPEED .. "=" .. serialize_speed(speed)
-                end
-            end
-        else
-            lines[#lines + 1] = line
-        end
-    end
-
-    if speed ~= nil and not found then
-        lines[#lines + 1] = SPEED_COMMENT
-        lines[#lines + 1] = SETTING_SPEED .. "=" .. serialize_speed(speed)
-    end
-
-    if speed == nil and not found then
-        return true
-    end
-
-    return write_file(settings_path, table.concat(lines, "\n") .. "\n")
+    -- 速度值和启用选项通过同一次合并写入处理，并保持 video_speed 紧跟在
+    -- video_speed_enabled 后面；speed=nil 仅用于清理已保存的速度值。
+    return ensure_speed_option_fields(speed, speed == nil)
 end
 
 local function save_speed_state(reason)

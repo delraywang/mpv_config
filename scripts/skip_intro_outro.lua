@@ -9,12 +9,16 @@ local EXTERNAL_PROP = "skip_intro_outro"
 local CONFIG_DIRECTORY_NAME = ".mpv"
 local CONFIG_FILE_NAME = "settings.conf"
 local SETTING_SKIP_ENABLED = "skip_intro_outro_enabled"
-local SETTING_INTRO_END_TIME = "intro_end_time"
-local SETTING_OUTRO_SKIP_DURATION = "outro_skip_duration"
+local SETTING_INTRO_END_TIME = "skip_intro_outro_intro_end_time"
+local SETTING_OUTRO_SKIP_DURATION = "skip_intro_outro_outro_skip_duration"
 
 local settings_path = nil
 local loaded_path = nil
-local settings = { skip_enabled = false, intro_end_time = 0, outro_skip_duration = 0 }
+local settings = {
+    skip_enabled = false,
+    skip_intro_outro_intro_end_time = 0,
+    skip_intro_outro_outro_skip_duration = 0,
+}
 local outro_already_skipped = false
 local intro_timer = nil
 
@@ -174,16 +178,16 @@ local function write_settings()
             end
         elseif key == SETTING_INTRO_END_TIME then
             if not seen[key] then
-                lines[#lines + 1] = key .. "=" .. serialize_seconds(settings.intro_end_time)
+                lines[#lines + 1] = key .. "=" .. serialize_seconds(settings.skip_intro_outro_intro_end_time)
                 seen[key] = true
             end
         elseif key == SETTING_OUTRO_SKIP_DURATION then
             if not seen[key] then
-                lines[#lines + 1] = key .. "=" .. serialize_seconds(settings.outro_skip_duration)
+                lines[#lines + 1] = key .. "=" .. serialize_seconds(settings.skip_intro_outro_outro_skip_duration)
                 seen[key] = true
             end
-        elseif key ~= "enabled" and key ~= "intro" and key ~= "outro" then
-            -- 保留弹幕脚本及其他脚本的字段和注释。
+        else
+            -- 保留其他脚本字段和注释。
             lines[#lines + 1] = line
         end
     end
@@ -194,11 +198,11 @@ local function write_settings()
     end
     if not seen[SETTING_INTRO_END_TIME] then
         lines[#lines + 1] = "# 片头结束时间，单位为秒；视频播放时会跳转到此时间。"
-        lines[#lines + 1] = SETTING_INTRO_END_TIME .. "=" .. serialize_seconds(settings.intro_end_time)
+        lines[#lines + 1] = SETTING_INTRO_END_TIME .. "=" .. serialize_seconds(settings.skip_intro_outro_intro_end_time)
     end
     if not seen[SETTING_OUTRO_SKIP_DURATION] then
         lines[#lines + 1] = "# 片尾跳过时长，单位为秒；播放到总时长减去此值时切换下一集。"
-        lines[#lines + 1] = SETTING_OUTRO_SKIP_DURATION .. "=" .. serialize_seconds(settings.outro_skip_duration)
+        lines[#lines + 1] = SETTING_OUTRO_SKIP_DURATION .. "=" .. serialize_seconds(settings.skip_intro_outro_outro_skip_duration)
     end
 
     local file = io.open(settings_path, "w")
@@ -213,7 +217,11 @@ local function write_settings()
 end
 
 local function read_settings()
-    local loaded = { skip_enabled = false, intro_end_time = 0, outro_skip_duration = 0 }
+    local loaded = {
+        skip_enabled = false,
+        skip_intro_outro_intro_end_time = 0,
+        skip_intro_outro_outro_skip_duration = 0,
+    }
     local content = settings_path and read_file(settings_path) or nil
     if not content then
         return loaded
@@ -225,9 +233,9 @@ local function read_settings()
             value = value:lower()
             loaded.skip_enabled = value == "yes" or value == "on" or value == "true" or value == "1"
         elseif key == SETTING_INTRO_END_TIME then
-            loaded.intro_end_time = parse_seconds(value) or 0
+            loaded.skip_intro_outro_intro_end_time = parse_seconds(value) or 0
         elseif key == SETTING_OUTRO_SKIP_DURATION then
-            loaded.outro_skip_duration = parse_seconds(value) or 0
+            loaded.skip_intro_outro_outro_skip_duration = parse_seconds(value) or 0
         end
     end
     return loaded
@@ -265,7 +273,11 @@ end
 local function load_settings_for_current_file()
     settings_path = nil
     loaded_path = nil
-    settings = { skip_enabled = false, intro_end_time = 0, outro_skip_duration = 0 }
+    settings = {
+        skip_enabled = false,
+        skip_intro_outro_intro_end_time = 0,
+        skip_intro_outro_outro_skip_duration = 0,
+    }
 
     local directory, path = current_video_folder()
     if not directory then
@@ -303,7 +315,7 @@ local function open_settings_menu(edit_key, error_message)
         },
         {
             title = "片头",
-            hint = "当前：" .. format_seconds(settings.intro_end_time),
+            hint = "当前：" .. format_seconds(settings.skip_intro_outro_intro_end_time),
             keep_open = true,
             selectable = true,
             actions = {{
@@ -314,7 +326,7 @@ local function open_settings_menu(edit_key, error_message)
         },
         {
             title = "片尾",
-            hint = "当前：" .. format_seconds(settings.outro_skip_duration) .. "（距片尾）",
+            hint = "当前：" .. format_seconds(settings.skip_intro_outro_outro_skip_duration) .. "（距片尾）",
             keep_open = true,
             selectable = true,
             actions = {{
@@ -365,7 +377,7 @@ local function capture_intro()
         return
     end
 
-    settings.intro_end_time = position
+    settings.skip_intro_outro_intro_end_time = position
     if save_or_warn() then
         mp.osd_message("片头已设为 " .. format_seconds(position), 2)
     end
@@ -380,9 +392,9 @@ local function capture_outro()
         return
     end
 
-    settings.outro_skip_duration = math.max(0, duration - position)
+    settings.skip_intro_outro_outro_skip_duration = math.max(0, duration - position)
     if save_or_warn() then
-        mp.osd_message("片尾已设为 " .. format_seconds(settings.outro_skip_duration) .. "（距片尾）", 2)
+        mp.osd_message("片尾已设为 " .. format_seconds(settings.skip_intro_outro_outro_skip_duration) .. "（距片尾）", 2)
     end
     open_settings_menu()
 end
@@ -412,19 +424,19 @@ local function schedule_intro_skip()
         intro_timer:kill()
         intro_timer = nil
     end
-    if not settings.skip_enabled or settings.intro_end_time <= 0 or not loaded_path then
+    if not settings.skip_enabled or settings.skip_intro_outro_intro_end_time <= 0 or not loaded_path then
         return
     end
 
     local path = loaded_path
     intro_timer = mp.add_timeout(0.15, function()
-        if loaded_path ~= path or not settings.skip_enabled or settings.intro_end_time <= 0 then
+        if loaded_path ~= path or not settings.skip_enabled or settings.skip_intro_outro_intro_end_time <= 0 then
             return
         end
 
         local duration = mp.get_property_number("duration", 0)
-        if duration <= 0 or settings.intro_end_time < duration then
-            mp.commandv("seek", serialize_seconds(settings.intro_end_time), "absolute+exact")
+        if duration <= 0 or settings.skip_intro_outro_intro_end_time < duration then
+            mp.commandv("seek", serialize_seconds(settings.skip_intro_outro_intro_end_time), "absolute+exact")
         end
     end)
 end
@@ -487,16 +499,17 @@ mp.register_event("file-loaded", function()
 end)
 
 mp.observe_property("time-pos", "number", function(_, position)
-    if outro_already_skipped or not settings.skip_enabled or settings.outro_skip_duration <= 0 or not position then
+    if outro_already_skipped or not settings.skip_enabled
+        or settings.skip_intro_outro_outro_skip_duration <= 0 or not position then
         return
     end
 
     local duration = mp.get_property_number("duration", 0)
-    if duration <= settings.outro_skip_duration then
+    if duration <= settings.skip_intro_outro_outro_skip_duration then
         return
     end
 
-    if position >= duration - settings.outro_skip_duration then
+    if position >= duration - settings.skip_intro_outro_outro_skip_duration then
         outro_already_skipped = true
         mp.commandv("script-binding", "uosc/next")
     end
