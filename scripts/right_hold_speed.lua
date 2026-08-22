@@ -6,6 +6,8 @@ local key_down = false
 local holding = false
 local previous_speed = 1
 local hold_timer = nil
+local right_consumed = false
+local RIGHT_CONSUME_PROP = "user-data/skip_intro_outro/consume-right"
 
 local function stop_timer()
     if hold_timer then
@@ -28,15 +30,36 @@ local function handle_right(event)
         if key_down then return end
 
         key_down = true
+        stop_timer()
+
+        -- skip_intro_outro owns this key while an intro/outro countdown is
+        -- active. Consume both key events so neither seek nor hold-to-speed
+        -- runs for the cancellation press.
+        if mp.get_property_bool(RIGHT_CONSUME_PROP, false) then
+            -- Clear the shared latch before notifying the skip script. The
+            -- current press is consumed below, while the original RIGHT
+            -- binding is immediately available for the next press.
+            mp.set_property_bool(RIGHT_CONSUME_PROP, false)
+            right_consumed = true
+            mp.commandv("script-message-to", "skip_intro_outro", "right-pressed")
+            return
+        end
+
+        right_consumed = false
         holding = false
         previous_speed = mp.get_property_number("speed", 1)
-        stop_timer()
         hold_timer = mp.add_timeout(HOLD_DELAY, begin_hold)
     elseif event.event == "up" then
         if not key_down then return end
 
         key_down = false
         stop_timer()
+
+        if right_consumed then
+            right_consumed = false
+            holding = false
+            return
+        end
 
         if holding then
             mp.set_property_number("speed", previous_speed)
