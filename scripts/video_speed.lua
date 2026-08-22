@@ -1,31 +1,34 @@
--- 按当前视频所在文件夹保存并恢复播放速度。
+-- 保存并恢复当前视频的播放速度（视频速度）。
 -- 配置保存在当前播放目录的 .mpv/settings.conf 的 speed 字段。
 
 local mp = require("mp")
-local options = require("mp.options")
 local utils = require("mp.utils")
 
-local opt = {
+local SETTING_SPEED = "speed"
+local SETTING_SPEED_ENABLED = "video_speed_enabled"
+local SETTING_SPEED_SAVE_DELAY = "video_speed_save_delay"
+local SETTING_SPEED_MIN = "video_speed_min_speed"
+local SETTING_SPEED_MAX = "video_speed_max_speed"
+local SETTINGS_FILE_NAME = "settings.conf"
+
+local SPEED_COMMENT = "# 当前视频的播放速度；1.0 为正常速度。"
+local SPEED_OPTION_FIELDS = {
+    { key = SETTING_SPEED_ENABLED, comment = "# 是否启用当前视频的自动倍速保存与恢复。" },
+    { key = SETTING_SPEED_SAVE_DELAY, comment = "# 倍速变化后的延迟保存时间，单位为秒。" },
+    { key = SETTING_SPEED_MIN, comment = "# 允许保存和恢复的最低视频播放速度。" },
+    { key = SETTING_SPEED_MAX, comment = "# 允许保存和恢复的最高视频播放速度。" },
+}
+local speed_options = {
     enabled = true,
     save_delay = 0.8,
     min_speed = 0.1,
     max_speed = 10,
 }
-
-options.read_options(opt)
-
-if not opt.enabled then
-    mp.msg.info("folder_speed_cache 已禁用")
-    return
-end
-
-local SETTING_SPEED = "speed"
-local SETTINGS_FILE_NAME = "settings.conf"
-local SPEED_COMMENT = "# 当前文件夹视频的播放速度；1.0 为正常速度。"
 local current_folder_name = nil
 local current_folder_path = nil
 local settings_path = nil
 local suppress_save_until = 0
+local save_timer = nil
 
 local function is_protocol(path)
     return type(path) == "string" and (
@@ -64,6 +67,117 @@ local function write_file(path, content)
     return true
 end
 
+local function parse_boolean(value)
+    value = value:lower()
+    if value == "yes" or value == "on" or value == "true" or value == "1" then
+        return true
+    elseif value == "no" or value == "off" or value == "false" or value == "0" then
+        return false
+    end
+    return nil
+end
+
+local function reset_speed_options()
+    speed_options = {
+        enabled = true,
+        save_delay = 0.8,
+        min_speed = 0.1,
+        max_speed = 10,
+    }
+end
+
+local function load_speed_options()
+    reset_speed_options()
+    local content = read_file(settings_path)
+    if not content then
+        return
+    end
+
+    for line in content:gmatch("[^\r\n]+") do
+        local key, value = line:match("^%s*([%w_-]+)%s*=%s*(.-)%s*$")
+        if key == SETTING_SPEED_ENABLED then
+            local parsed = parse_boolean(value)
+            if parsed ~= nil then
+                speed_options.enabled = parsed
+            end
+        elseif key == SETTING_SPEED_SAVE_DELAY then
+            local parsed = tonumber(value)
+            if parsed and parsed >= 0 then
+                speed_options.save_delay = parsed
+            end
+        elseif key == SETTING_SPEED_MIN then
+            local parsed = tonumber(value)
+            if parsed and parsed > 0 then
+                speed_options.min_speed = parsed
+            end
+        elseif key == SETTING_SPEED_MAX then
+            local parsed = tonumber(value)
+            if parsed and parsed > 0 then
+                speed_options.max_speed = parsed
+            end
+        end
+    end
+
+    if speed_options.min_speed > speed_options.max_speed then
+        speed_options.min_speed = 0.1
+        speed_options.max_speed = 10
+    end
+end
+
+local function serialize_speed_option(key)
+    if key == SETTING_SPEED_ENABLED then
+        return speed_options.enabled and "yes" or "no"
+    elseif key == SETTING_SPEED_SAVE_DELAY then
+        return tostring(speed_options.save_delay)
+    elseif key == SETTING_SPEED_MIN then
+        return tostring(speed_options.min_speed)
+    elseif key == SETTING_SPEED_MAX then
+        return tostring(speed_options.max_speed)
+    end
+    return nil
+end
+
+local function ensure_speed_option_fields()
+    if not settings_path then
+        return false
+    end
+
+    local content = read_file(settings_path) or ""
+    local lines = {}
+    local seen = {}
+    local changed = false
+    for line in content:gmatch("[^\r\n]+") do
+        local key = line:match("^%s*([%w_-]+)%s*=")
+        local is_speed_option = key == SETTING_SPEED_ENABLED
+            or key == SETTING_SPEED_SAVE_DELAY
+            or key == SETTING_SPEED_MIN
+            or key == SETTING_SPEED_MAX
+        if is_speed_option then
+            if not seen[key] then
+                lines[#lines + 1] = line
+                seen[key] = true
+            else
+                changed = true
+            end
+        else
+            lines[#lines + 1] = line
+        end
+    end
+
+    for _, field in ipairs(SPEED_OPTION_FIELDS) do
+        if not seen[field.key] then
+            lines[#lines + 1] = field.comment
+            lines[#lines + 1] = field.key .. "=" .. serialize_speed_option(field.key)
+            changed = true
+        end
+    end
+
+    if not changed then
+        return true
+    end
+    return write_file(settings_path, table.concat(lines, "\n") .. "\n")
+end
+
 local function normalize_path(path)
     local ok, normalized = pcall(mp.command_native, { "normalize-path", path })
     if ok and type(normalized) == "string" and normalized ~= "" then
@@ -95,7 +209,7 @@ local function get_folder_key()
 end
 
 local function valid_speed(speed)
-    return type(speed) == "number" and speed >= opt.min_speed and speed <= opt.max_speed
+    return type(speed) == "number" and speed >= speed_options.min_speed and speed <= speed_options.max_speed
 end
 
 local function is_directory(path)
@@ -145,6 +259,8 @@ local function select_current_folder()
     end
 
     settings_path = utils.join_path(config_directory, SETTINGS_FILE_NAME)
+    load_speed_options()
+    ensure_speed_option_fields()
 end
 
 local function serialize_speed(speed)
@@ -214,7 +330,7 @@ local function update_speed_setting(speed)
 end
 
 local function save_speed_state(reason)
-    if not current_folder_name then
+    if not current_folder_name or not speed_options.enabled then
         return
     end
 
@@ -225,25 +341,25 @@ local function save_speed_state(reason)
 
     update_speed_setting(speed)
 
-    mp.msg.verbose(string.format("已保存文件夹播放速度 [%s]: %s", reason or "manual", current_folder_name))
+    mp.msg.verbose(string.format("已保存视频播放速度 [%s]: %s", reason or "manual", current_folder_name))
 end
 
-local save_timer = mp.add_timeout(opt.save_delay, function()
-    save_speed_state("delayed")
-end)
-save_timer:kill()
-
 local function schedule_save()
-    if not current_folder_name or mp.get_time() < suppress_save_until then
+    if not current_folder_name or not speed_options.enabled or mp.get_time() < suppress_save_until then
         return
     end
 
-    save_timer:kill()
-    save_timer:resume()
+    if save_timer then
+        save_timer:kill()
+    end
+    save_timer = mp.add_timeout(speed_options.save_delay, function()
+        save_timer = nil
+        save_speed_state("delayed")
+    end)
 end
 
 local function restore_speed_state()
-    if not current_folder_name then
+    if not current_folder_name or not speed_options.enabled then
         return
     end
 
@@ -252,12 +368,16 @@ local function restore_speed_state()
         return
     end
 
-    suppress_save_until = mp.get_time() + opt.save_delay + 1
+    suppress_save_until = mp.get_time() + speed_options.save_delay + 1
     mp.set_property_number("speed", speed)
-    mp.msg.info("已恢复文件夹播放速度: " .. current_folder_name)
+    mp.msg.info("已恢复视频播放速度: " .. current_folder_name)
 end
 
 mp.register_event("start-file", function()
+    if save_timer then
+        save_timer:kill()
+        save_timer = nil
+    end
     select_current_folder()
 end)
 
@@ -267,12 +387,18 @@ mp.register_event("file-loaded", function()
 end)
 
 mp.register_event("end-file", function()
-    save_timer:kill()
+    if save_timer then
+        save_timer:kill()
+        save_timer = nil
+    end
     save_speed_state("end-file")
 end)
 
 mp.register_event("shutdown", function()
-    save_timer:kill()
+    if save_timer then
+        save_timer:kill()
+        save_timer = nil
+    end
     save_speed_state("shutdown")
 end)
 
@@ -280,14 +406,14 @@ mp.observe_property("speed", "number", function()
     schedule_save()
 end)
 
-mp.register_script_message("folder-speed-cache-save", function()
+mp.register_script_message("video-speed-save", function()
     save_speed_state("script-message")
 end)
 
-mp.register_script_message("folder-speed-cache-clean", function()
+mp.register_script_message("video-speed-clean", function()
     if update_speed_setting(nil) then
-        mp.osd_message("已清理当前文件夹播放速度设置", 2)
+        mp.osd_message("已清理当前视频播放速度设置", 2)
     end
 end)
 
-mp.msg.info("正在运行 文件夹播放速度设置")
+mp.msg.info("正在运行 视频速度设置")

@@ -1,6 +1,6 @@
 --[[
 
-文档_ save_global_props.conf
+文件夹属性保存恢复说明
 
 记录播放目录内的属性变化，支持下次播放同一目录时恢复；数据保存在 .mpv/settings.conf
 （选项 --save-position-on-quit 保存的是基于具体文件的属性，不要与 --watch-later-options 保存的属性相冲突）
