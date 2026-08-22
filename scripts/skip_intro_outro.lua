@@ -1,5 +1,5 @@
--- Per-folder intro/outro skipping for mpv-lazy.
--- Settings are stored beside the video files in .mpv/settings.conf.
+-- mpv-lazy 的按文件夹片头片尾跳过脚本。
+-- 配置保存在视频目录旁的 .mpv/settings.conf 中。
 
 local mp = require("mp")
 local utils = require("mp.utils")
@@ -14,7 +14,6 @@ local SETTING_INTRO_END_TIME = "skip_intro_outro_intro_end_time"
 local SETTING_OUTRO_SKIP_DURATION = "skip_intro_outro_outro_skip_duration"
 local SETTING_OUTRO_SKIP_DELAY = "skip_intro_outro_outro_skip_delay"
 local RIGHT_CONSUME_PROP = "user-data/" .. SCRIPT_NAME .. "/consume-right"
-local OUTRO_COUNTDOWN_SECONDS = 10
 local DEFAULT_INTRO_SKIP_DELAY = 3
 local DEFAULT_OUTRO_SKIP_DELAY = 10
 
@@ -27,16 +26,24 @@ local settings = {
     skip_intro_outro_outro_skip_duration = 0,
     skip_intro_outro_outro_skip_delay = DEFAULT_OUTRO_SKIP_DELAY,
 }
+-- 当前文件是否已经执行过片尾跳过。
 local outro_already_skipped = false
+-- 片头跳过检查定时器。
 local intro_timer = nil
+-- 片头或片尾倒计时定时器。
 local countdown_timer = nil
+-- 当前等待执行的跳过类型。
 local pending_skip = nil
+-- 当前视频是否已取消片头跳过。
 local intro_skip_cancelled = false
+-- 当前文件加载时记录的初始播放位置。
 local intro_initial_position = nil
+-- 设置菜单打开前的暂停状态。
+local settings_menu_pause_state = nil
 local serialize_seconds
 
--- This uses the same plain ASS text style as uosc_danmaku's show_message(),
--- but anchors it to the upper-right corner as requested.
+-- 使用与 uosc_danmaku 的 show_message() 相同的普通 ASS 文本样式，
+-- 但按要求固定显示在右上角。
 local skip_message_overlay = mp.create_osd_overlay("ass-events")
 local skip_message_timer = nil
 
@@ -48,6 +55,7 @@ local function hide_skip_message()
     skip_message_overlay:remove()
 end
 
+-- 在右上角显示跳过提示，并按需自动隐藏。
 local function show_skip_message(text, duration)
     if skip_message_timer then
         skip_message_timer:kill()
@@ -73,10 +81,12 @@ local function show_skip_message(text, duration)
     end
 end
 
+-- 设置 RIGHT 键是否由本脚本暂时消费。
 local function set_right_key_consumed(value)
     mp.set_property_bool(RIGHT_CONSUME_PROP, value)
 end
 
+-- 停止当前的跳过倒计时。
 local function stop_countdown()
     if countdown_timer then
         countdown_timer:kill()
@@ -85,6 +95,7 @@ local function stop_countdown()
 end
 
 local function clear_pending_skip()
+    -- 清理倒计时、待执行类型和 RIGHT 键占用标记。
     stop_countdown()
     pending_skip = nil
     set_right_key_consumed(false)
@@ -102,7 +113,34 @@ local function reset_playback_skip_state()
     intro_initial_position = nil
 end
 
+local function restore_settings_menu_pause()
+    if settings_menu_pause_state == nil then
+        return
+    end
+
+    local was_paused = settings_menu_pause_state
+    settings_menu_pause_state = nil
+    if not was_paused then
+        mp.set_property_bool("pause", false)
+    end
+end
+
+local function schedule_settings_menu_pause_restore()
+    if settings_menu_pause_state == nil then
+        return
+    end
+
+    mp.add_timeout(0, function()
+        -- uosc 会先关闭旧菜单再打开新菜单；只有整个设置菜单消失后才恢复播放。
+        if mp.get_property("user-data/uosc/menu/type", "") == "skip_intro_outro_settings" then
+            return
+        end
+        restore_settings_menu_pause()
+    end)
+end
+
 local function execute_pending_skip(kind)
+    -- 执行倒计时结束后的片头定位或片尾下一集操作。
     if pending_skip ~= kind then
         return
     end
@@ -113,7 +151,8 @@ local function execute_pending_skip(kind)
     if kind == "intro" then
         intro_skip_cancelled = true
         local intro_time = settings.skip_intro_outro_intro_end_time
-        if intro_time > 0 then
+        local position = mp.get_property_number("time-pos", -1)
+        if intro_time > 0 and position < intro_time then
             mp.commandv("seek", serialize_seconds(intro_time), "absolute+exact")
         end
     elseif kind == "outro" then
@@ -132,8 +171,7 @@ local function cancel_pending_skip()
     if kind == "intro" then
         intro_skip_cancelled = true
     else
-        -- Cancelling is for this file/playback only; do not repeatedly prompt
-        -- while the current position remains inside the outro range.
+        -- 取消只对当前文件/本次播放有效；当前位置仍在片尾范围内时不再重复提示。
         outro_already_skipped = true
     end
 
@@ -141,13 +179,12 @@ local function cancel_pending_skip()
     return true
 end
 
-local function start_countdown(kind, seconds)
+local function start_countdown(kind, target_position)
+    -- 按媒体时间倒计时；播放速度和暂停状态会自然反映在 time-pos 上。
     stop_countdown()
     pending_skip = kind
     set_right_key_consumed(true)
 
-    local elapsed = 0
-    local last_time = mp.get_time()
     local last_displayed = nil
 
     local function update_countdown()
@@ -156,13 +193,12 @@ local function start_countdown(kind, seconds)
             return
         end
 
-        local now = mp.get_time()
-        if not mp.get_property_bool("pause", false) then
-            elapsed = elapsed + math.max(0, now - last_time)
+        local position = mp.get_property_number("time-pos", -1)
+        if position < 0 then
+            return
         end
-        last_time = now
 
-        local remaining = seconds - elapsed
+        local remaining = target_position - position
         local displayed = math.max(1, math.ceil(remaining))
         if displayed ~= last_displayed then
             last_displayed = displayed
@@ -182,10 +218,14 @@ local function start_countdown(kind, seconds)
     update_countdown()
 end
 
+local function get_outro_skip_position(duration)
+    return duration - settings.skip_intro_outro_outro_skip_duration
+end
+
 local function should_start_outro_countdown(position, duration)
     local lead = math.max(0, tonumber(settings.skip_intro_outro_outro_skip_delay)
         or DEFAULT_OUTRO_SKIP_DELAY)
-    local outro_start = duration - settings.skip_intro_outro_outro_skip_duration
+    local outro_start = get_outro_skip_position(duration)
     -- 片尾配置为“距结尾的时长”。例如片尾为 120 秒、提前量为
     -- 10 秒时，在距结尾 130 秒的位置开始倒计时，倒计时结束时
     -- 正好到达原本的片尾跳过点（距结尾 120 秒）。
@@ -291,8 +331,7 @@ local function ensure_directory(path)
     local platform = mp.get_property("platform", "")
     local result
     if platform == "windows" then
-        -- mkdir is a cmd built-in; passing the path as a separate argument
-        -- preserves spaces and Unicode characters in Windows video folders.
+        -- mkdir 是 cmd 内置命令；将路径作为独立参数传入，以保留 Windows 视频目录中的空格和 Unicode 字符。
         local windows_path = path:gsub("/", "\\")
         result = mp.command_native({
             name = "subprocess",
@@ -374,8 +413,7 @@ local function write_settings()
                 managed_inserted = true
             end
         elseif managed_comments[line] then
-            -- Replace comments generated by this script together with its
-            -- managed fields; unrelated comments remain untouched.
+            -- 与本脚本字段一起替换本脚本生成的注释，其他注释保持不变。
         else
             -- 保留其他脚本字段和注释。
             lines[#lines + 1] = line
@@ -460,6 +498,7 @@ local function register_settings_button()
 end
 
 local function load_settings_for_current_folder()
+    -- 读取当前视频文件夹的设置，并合并维护本脚本的配置字段。
     settings_path = nil
     loaded_path = nil
     settings = {
@@ -491,10 +530,16 @@ local function load_settings_for_current_folder()
 end
 
 local function open_settings_menu(edit_key, error_message)
+    -- 打开片头片尾设置菜单；菜单打开期间暂停播放。
     if not settings_path then
         mp.osd_message("片头片尾跳过仅支持本地视频文件", 3)
         return
     end
+
+    if settings_menu_pause_state == nil then
+        settings_menu_pause_state = mp.get_property_bool("pause", false)
+    end
+    mp.set_property_bool("pause", true)
 
     local items = {
         {
@@ -506,7 +551,7 @@ local function open_settings_menu(edit_key, error_message)
         },
         {
             title = "片头",
-            hint = "当前：" .. format_seconds(settings.skip_intro_outro_intro_end_time),
+            hint = format_seconds(settings.skip_intro_outro_intro_end_time),
             keep_open = true,
             selectable = true,
             actions = {{
@@ -517,13 +562,13 @@ local function open_settings_menu(edit_key, error_message)
         },
         {
             title = "片尾",
-            hint = "当前：" .. format_seconds(settings.skip_intro_outro_outro_skip_duration) .. "（距片尾）",
+            hint = format_seconds(settings.skip_intro_outro_outro_skip_duration),
             keep_open = true,
             selectable = true,
             actions = {{
                 icon = "my_location",
                 name = "capture_outro",
-                label = "将“视频总时长 − 当前播放时间”设为片尾",
+                label = "将当前播放时间设为片尾",
             }},
         },
     }
@@ -531,7 +576,7 @@ local function open_settings_menu(edit_key, error_message)
     local menu = {
         type = "skip_intro_outro_settings",
         title = "片头片尾跳过",
-        footnote = "片头为跳转到的时间；片尾为距视频结尾的时长。",
+        footnote = "打开设置时会暂停播放；片头为跳转到的时间，片尾为距视频结尾的时长。",
         search_style = "disabled",
         item_actions_place = "outside",
         callback = { SCRIPT_NAME, "skip-intro-outro-configure" },
@@ -611,6 +656,7 @@ local function set_skip_time_setting(key, text)
 end
 
 local function schedule_intro_skip()
+    -- 等待恢复播放位置稳定后，决定是否启动片头倒计时或直接定位。
     if intro_timer then
         intro_timer:kill()
         intro_timer = nil
@@ -650,11 +696,10 @@ local function schedule_intro_skip()
                 intro_skip_cancelled = true
                 mp.commandv("seek", serialize_seconds(settings.skip_intro_outro_intro_end_time), "absolute+exact")
             else
-                start_countdown("intro", delay)
+                start_countdown("intro", position + delay)
             end
         elseif settings.skip_intro_outro_intro_end_time < duration then
-            -- A restored position before the configured intro end is still a
-            -- resume, so preserve the original immediate-skip behavior.
+            -- 已恢复到片头结束点之前仍视为续播，保持原有的立即跳转行为。
             mp.commandv("seek", serialize_seconds(settings.skip_intro_outro_intro_end_time), "absolute+exact")
         end
     end)
@@ -692,6 +737,10 @@ end)
 
 mp.register_script_message("skip-intro-outro-configure", function(first, second)
     local event = type(first) == "string" and utils.parse_json(first) or nil
+    if event and event.type == "close" then
+        schedule_settings_menu_pause_restore()
+        return
+    end
     if event and event.type == "activate" then
         if event.action == "capture_intro" then
             capture_intro()
@@ -723,10 +772,12 @@ mp.register_script_message("skip-intro-outro-configure", function(first, second)
 end)
 
 mp.register_event("start-file", function()
+    restore_settings_menu_pause()
     reset_playback_skip_state()
 end)
 
 mp.register_event("file-loaded", function()
+    restore_settings_menu_pause()
     reset_playback_skip_state()
     local initial_position = mp.get_property_number("time-pos", -1)
     if initial_position >= 0 then
@@ -750,10 +801,10 @@ mp.observe_property("time-pos", "number", function(_, position)
     end
 
     if should_start_outro_countdown(position, duration) then
-        start_countdown("outro", OUTRO_COUNTDOWN_SECONDS)
+        start_countdown("outro", get_outro_skip_position(duration))
     end
 end)
 
--- uosc may still be initializing while scripts are loaded; retry once after startup.
+-- 脚本加载时 uosc 可能尚未初始化，因此启动后再尝试注册一次设置按钮。
 mp.add_timeout(0.5, register_settings_button)
 mp.msg.info("正在运行 片头片尾跳过")
