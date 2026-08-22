@@ -21,6 +21,7 @@
 | `input_uosc.conf` | 键盘和鼠标快捷键配置。 |
 | `menu.conf` | mpv 菜单配置。 |
 | `script-opts.conf` | 脚本通用选项入口。 |
+| `script-load-order.conf` | Lua 脚本的手动加载顺序；调整脚本加载顺序时编辑此文件。 |
 | `script-opts/` | uosc、弹幕、缩略图和播放历史等脚本的独立配置。 |
 | `scripts/` | mpv Lua 脚本；其中包含 uosc、弹幕和本项目的自定义功能。 |
 | `shaders/` | GLSL 着色器合集；当前默认启用 `QCOM/QCOM_SGEDS_ms_RT.glsl`。 |
@@ -30,7 +31,7 @@
 
 ## 自定义脚本
 
-以下脚本位于 `scripts/`，无需额外注册，mpv 会自动加载其中的 Lua 文件。
+以下脚本位于 `scripts/`，加载顺序由 `script-load-order.conf` 统一管理。
 
 ### `right_hold_speed.lua`：右方向键短按跳转、长按倍速
 
