@@ -429,13 +429,27 @@ local function schedule_intro_skip()
     end
 
     local path = loaded_path
-    intro_timer = mp.add_timeout(0.15, function()
+    -- 等待 mpv 应用 watch-later/start 中保存的播放位置，再决定是否跳过片头。
+    intro_timer = mp.add_timeout(0.5, function()
+        intro_timer = nil
         if loaded_path ~= path or not settings.skip_enabled or settings.skip_intro_outro_intro_end_time <= 0 then
             return
         end
 
+        local position = mp.get_property_number("time-pos", -1)
         local duration = mp.get_property_number("duration", 0)
-        if duration <= 0 or settings.skip_intro_outro_intro_end_time < duration then
+        -- 文件尚未准备好时稍后重试，避免过早跳转覆盖恢复位置。
+        if position < 0 or duration <= 0 then
+            schedule_intro_skip()
+            return
+        end
+
+        -- 已恢复到片头之后的位置时，说明这是续播，不应再跳回片头。
+        if position >= settings.skip_intro_outro_intro_end_time then
+            return
+        end
+
+        if settings.skip_intro_outro_intro_end_time < duration then
             mp.commandv("seek", serialize_seconds(settings.skip_intro_outro_intro_end_time), "absolute+exact")
         end
     end)
