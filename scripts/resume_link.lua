@@ -12,6 +12,8 @@ local options = {
     end_rewind = 10,
     create_on_end = true,
     create_on_shutdown = true,
+    -- 仅由“继续之前播放”快捷方式通过 --script-opts 传入；不写入配置文件。
+    resume_position = "",
 }
 
 require("mp.options").read_options(options, mp.get_script_name())
@@ -26,6 +28,10 @@ local last_position = 0
 local current_duration = 0
 local last_saved_path = nil
 local last_saved_reason = nil
+local pending_resume_position = tonumber(options.resume_position)
+if not pending_resume_position or pending_resume_position < 0 then
+    pending_resume_position = nil
+end
 
 local function is_local_path(path)
     if type(path) ~= "string" or path == "" then
@@ -85,7 +91,13 @@ local function create_shortcut(media_path, position, reason)
     -- 使用带斜杠的 ~~home/ 获取绝对配置目录；不带斜杠时 mpv 可能不会展开它。
     local config_dir = mp.command_native({"expand-path", "~~home/"})
     config_dir = config_dir:gsub("[/\\]$", "")
-    local arguments = string.format('--config-dir="%s" --start=%.3f -- "%s"', config_dir, position, media_path)
+    local arguments = string.format(
+        '--config-dir="%s" --no-resume-playback '
+            .. '--script-opts=resume_link-resume_position=%.3f -- "%s"',
+        config_dir,
+        position,
+        media_path
+    )
 
     local command = string.format([[
 $ErrorActionPreference = 'Stop'
@@ -153,6 +165,27 @@ end
 
 local function on_file_loaded()
     update_current_file()
+
+    if not pending_resume_position then
+        return
+    end
+
+    -- 只对快捷方式启动时的第一个文件执行一次恢复。
+    local target_position = pending_resume_position
+    local target_path = current_path
+    pending_resume_position = nil
+    mp.add_timeout(0.1, function()
+        if mp.get_property("path") ~= target_path then
+            return
+        end
+
+        local duration = mp.get_property_number("duration", 0) or 0
+        if duration > 0 then
+            target_position = math.min(target_position, duration)
+        end
+        mp.commandv("seek", string.format("%.3f", target_position), "absolute+exact")
+        msg.info(string.format("已恢复播放位置: %.1f 秒", target_position))
+    end)
 end
 
 local function on_end_file(event)
