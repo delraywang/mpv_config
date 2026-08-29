@@ -9,6 +9,7 @@
 - 使用 `gpu-next` 视频输出、自动硬件解码和显示器重采样同步。
 - 采用 uosc 作为播放界面，提供播放列表、轨道选择、速度、时间轴、统计信息等控件。
 - 集成弹幕搜索与显示、时间轴缩略图预览及播放历史菜单。
+- 为序号开头的弹幕提供缓存、合成与独立字幕避让渲染，并将结果保存为本地 JSON 快照。
 - 提供多组图像着色器与 VapourSynth 脚本预设，方便按需调校画质、插帧、降噪或超分。
 - 保存播放进度、常用全局属性，并支持按视频文件夹分别保存片头片尾和播放速度。
 
@@ -22,8 +23,8 @@
 | `menu.conf` | mpv 菜单配置。 |
 | `script-opts.conf` | 脚本通用选项入口。 |
 | `script-load-order.conf` | Lua 脚本的手动加载顺序；调整脚本加载顺序时编辑此文件。 |
-| `script-opts/` | uosc、弹幕、缩略图和播放历史等脚本的独立配置。 |
-| `scripts/` | mpv Lua 脚本；其中包含 uosc、弹幕和本项目的自定义功能。 |
+| `script-opts/` | uosc、弹幕、缩略图和播放历史等脚本的独立配置；合成弹幕选项位于 `danmaku_merge_extension.conf`。 |
+| `scripts/` | mpv Lua 脚本；其中包含 uosc、弹幕和本项目的自定义功能。`danmaku_merge_extension.lua` 在核心弹幕脚本初始化后由入口脚本加载。 |
 | `shaders/` | GLSL 着色器合集；当前默认启用 `QCOM/QCOM_SGEDS_ms_RT.glsl`。 |
 | `vs/` | VapourSynth 处理预设，包括插帧、降噪与超分相关脚本。 |
 | `fonts/` | 界面与字幕使用的本地字体。 |
@@ -73,6 +74,27 @@
 - 配置和速度值保存在视频目录的 `.mpv/settings.conf` 中；可通过 `video_speed_enabled`、`video_speed_save_delay`、`video_speed_min_speed` 和 `video_speed_max_speed` 调整行为。
 - 脚本会与片头片尾脚本共用同一个配置文件，并保留其中不属于自身的字段和注释。
 - 可用脚本消息 `video-speed-save` 立即保存，或用 `video-speed-clean` 清除当前目录已保存的速度值。
+
+### `danmaku_merge_extension.lua`：序号弹幕缓存、合成与字幕避让
+
+扩展由 `scripts/uosc_danmaku.lua` 在核心弹幕脚本初始化后加载；它不修改 `scripts/uosc_danmaku/` 目录中的核心实现。普通弹幕始终以 `DANMAKU.sources` 为来源，参与合成的原始项会标记 `merged=true` 并跳过普通渲染；合成项由扩展独立渲染。
+
+- 识别阿拉伯数字、中文数字和罗马数字开头的序号。中文序号必须带明确分隔符，例如 `一：正文`；`一正文` 不会进入缓存。
+- 每条源弹幕补充 `time_formate`（`HH:MM:SS`）；可解析序号项写入 `DANMAKU_CACHE`，合成结果写入 `DANMAKU_MERGED`。合成前会依次清理首尾空白、去除结尾的 `♡数字`、再清理首尾空白。
+- 以序号 `1` 为锚点，在 `merge_time_window` 内按颜色、类型和字号筛选候选。允许少量缺号；累计缺失 3 个或以上时不合成。缺号但仍可合成时保留原始序号和符号。
+- 本地视频会生成三份快照：`.mpv/danmaku/<视频名>.json`（完整 sources）、`.mpv/danmaku/start/<视频名>.json`（序号缓存）和 `.mpv/danmaku/merged/<视频名>.json`（合成结果）。网络视频跳过落盘。
+- 合成弹幕默认显示 20 秒，单独换行并在画面底部向上排列。当前有主/副字幕文字时会按字号、缩放、描边、模糊、阴影与行数预留空间；没有当前字幕文字时不预留空白区域。
+- 同一条合成弹幕被字幕推高后会保持该最高位置，即使字幕消失也不会向下回落；切换视频或弹幕源改变时重置。
+
+常用配置位于 `script-opts/danmaku_merge_extension.conf`：
+
+| 配置项 | 默认值 | 说明 |
+| --- | --- | --- |
+| `merge_time_window` | `5` | 以序号 1 为中心的候选时间窗口，单位秒。 |
+| `merged_display_time` | `20` | 合成弹幕显示时长，单位秒，独立于普通弹幕的 `fixtime`。 |
+| `merged_render_color` | `65280` | 合成弹幕统一颜色。留空时保留每条合成项自身颜色；支持 `#RRGGBB`、`RRGGBB`、`0xRRGGBB` 或十进制 RGB 值。 |
+| `merged_subtitle_extra_height` | `10` | 字幕避让的额外安全高度，会乘以当前主/副字幕的缩放。 |
+| `log_success` | `no` | 是否向控制台输出本次成功合并数量。 |
 
 ### `episode_sub_autoload.lua`：按同名或集号加载同级字幕
 
