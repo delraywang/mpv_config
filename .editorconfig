@@ -1,0 +1,23 @@
+# 将本文件视为编辑器配置的根；编辑器无需继续向上级目录查找同类配置。
+root = true
+
+# 所有文本文件的默认规则。
+[*]
+# 统一以 UTF-8（无 BOM）保存，避免中文注释在不同编辑器中出现乱码。
+charset = utf-8
+# 使用 LF 换行，便于 Git 在不同平台上稳定比较差异。
+end_of_line = lf
+# 默认使用空格而非制表符缩进。
+indent_style = space
+# Lua、配置与文档默认采用两个空格的缩进宽度。
+indent_size = 2
+# 制表符显示宽度与缩进宽度保持一致。
+tab_width = 2
+# 每个文本文件以一个换行符结束，符合 POSIX 与 Git 的常见约定。
+insert_final_newline = true
+# 保存时移除行尾多余空白，减少无意义的版本差异。
+trim_trailing_whitespace = true
+
+# Markdown 的两个行尾空格可表示显式换行，因此保留它们。
+[*.md]
+trim_trailing_whitespace = false
